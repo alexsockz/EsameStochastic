@@ -1,0 +1,116 @@
+# come va implementato di base secondo il paper:
+# il treno parte da vcruise e da un determinato punto x0
+
+
+
+
+import numpy as np
+from numpy.random import Generator, PCG64
+import matplotlib.pyplot as plt
+
+class DMR(object):
+    '''
+    This function will simulate speed of a train and relative space between it and a train in front of it.
+    '''
+    #changed the parameters
+#                            
+    def __init__(self, b:float, vcruise:float, a: float, vmax:float, x0:float, sigma:float) ->None:
+        '''
+        - Parameters:
+        beta: strength of mean reversion to the mean level vcruise
+        vcruise: target velocity on the line
+        alfa: strength of distance to the train in front of it
+        vmax: maximum speed of the train
+        x0: initial position of the train with respect of the train in front of it
+        sigma: noise strength
+        '''
+        self.a=a
+        self.b = b
+        self.vcruise = vcruise
+        self.vmax = vmax
+        self.x0 = x0
+        self.sigma = sigma
+        if(a<=0 or b<=0 or vcruise<=0 or vmax<=0):
+            raise RuntimeError("One of the given parameters is 0 or negative")
+        
+        return
+
+    def __checkInputs(self,T: float,N: int)->None:
+        '''
+        Given the inputs for a trajectory, this method will
+        check if they are correct
+        '''
+        #T checks:
+        if T<0:
+            raise RuntimeError("Time interval must have a positive lenght")
+
+        #N checks:
+        if N<=1:
+            raise RuntimeError("The simulation must have at least two steps")
+
+        return
+
+    def __RK4(self,t_n: float, v_t:float, s_t:float, h: float)->float:
+        '''
+        Given a point in the trajectory, the time instant and the step lenght,
+        this method will compute the variation for y using the RK4 for the 
+        deterministic part of the PLS
+        '''
+        #Perform the check of the inputs. For N we hard code a good 
+        #self.__checkInputs(y_n,t_n,10)
+        
+        if h<=0:
+            raise RuntimeError("Given h is negative or 0")
+
+        v = lambda tn,vt,st: self.b*(self.vcruise-vt)+self.a*(self.vcruise*tn-st) ### <- changed the function to the deterministic part of the PLS
+        s = lambda tn,vt:   vt*tn
+        
+
+        Vk_1 = v(t_n,       v_t,          s_t)
+        Sk_1 = s(t_n,       v_t)
+
+        Vk_2 = v(t_n+(h/2), v_t+h*Vk_1/2, v_t+h*Sk_1/2)
+        Sk_2 = s(t_n+(h/2), v_t+h*Vk_1/2)
+        
+        Vk_3 = v(t_n+(h/2), v_t+h*Vk_2/2, v_t+h*Sk_2/2)
+        Sk_3 = s(t_n+(h/2), v_t+h*Vk_2/2)
+        
+        Vk_4 = v(t_n+h,     v_t+h*Vk_3,   v_t+h*Sk_3)
+        Sk_4 = s(t_n+h,     v_t+h*Vk_3)
+
+        return (h*(Vk_1+2*Vk_2+2*Vk_3+Vk_4)/6, h*(Sk_1+2*Sk_2+2*Sk_3+Sk_4)/6)
+        
+        
+    
+    def simulateTraj(self,T: float,N: int): 
+        '''
+        Given the initial population value x0, the considered interval lenght T
+        and the number of step in the computation N, this method will return a
+        trajectory for the PLS.
+        '''
+        #Check the inputs
+        self.__checkInputs(T,N)
+
+        if T==0:
+            return np.array([self.vcruise])
+
+        #Setup step lenght and traj array
+        h = T/N
+        v = np.zeros(N+1,dtype=float)
+        v[0] = self.vcruise
+        s = np.zeros(N+1,dtype=float)
+        s[0] = self.x0
+        time = np.zeros(N+1,dtype=float)
+        time[0] = time
+        #Setup random generator
+        rng = Generator(PCG64())
+
+        for i in range(1,N+1):
+            time[i] = i*h
+            dv, ds = self.__RK4(time[i-1],v[i-1],s[i-1],h) #determinstic part
+            sig=(v[i-1]*(self.vmax-v[i-1]))/(self.vcruise*(self.vmax-self.vcruise))
+            dv += self.sigma(np.sqrt(sig))*rng.normal()*np.sqrt(h) #noise part
+            traj[i] = traj[i-1] + dx
+            if traj[i]<0: traj[i]=0.0
+
+        return traj,time
