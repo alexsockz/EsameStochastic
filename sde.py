@@ -29,7 +29,7 @@ class DMR(object):
         self.b = b
         self.vcruise = vcruise
         self.vmax = vmax
-        self.x0 =- x0
+        self.x0 = x0
         self.sigma = sigma
         if(a<=0 or b<=0 or vcruise<=0 or vmax<=0):
             raise RuntimeError("One of the given parameters is 0 or negative")
@@ -85,11 +85,11 @@ class DMR(object):
         #ito for
         #h=dt
         dW= np.random.normal()*np.sqrt(h)
-        sigmahat=(vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise))*self.sigma
+        sigmahat=np.sqrt((vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise)))*self.sigma
         
         dv = (self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))*h + sigmahat*dW
         ds = vt*h
-        print(vt," ", h, " ", self.vcruise*tn-st)
+        #print(vt," ", h, " ", self.vcruise*tn-st)
         return dv,ds 
     
     def simulateTraj(self,T: float,N: int): 
@@ -110,7 +110,7 @@ class DMR(object):
         v = np.zeros(N+1,dtype=float)
         v[0] = self.vcruise
         s = np.zeros(N+1,dtype=float)
-        s[0] = -self.x0
+        s[0] = 0 #distance from the position if speed was constant
         time = np.zeros(N+1,dtype=float)
         time[0] = 0
         cs= np.zeros(N+1,dtype=float)
@@ -125,16 +125,16 @@ class DMR(object):
             #dv+=(v[i-1]*(self.vmax-v[i-1]))/(self.vcruise*(self.vmax-self.vcruise))*rng.normal()*np.sqrt(h)
             v[i] = v[i-1] + dv
             s[i] = s[i-1] + ds
-            cs[i]= self.vcruise*(time[i]+h)
+            cs[i]= self.vcruise*(time[i])
         return v, s, cs, time
     
 
 omega = [0.0,1.0] 
 Nbins = 150 
-Nsim = 1
+Nsim = 50
 m = (omega[1]-omega[0])/Nbins
 
-system = DMR(0.02,35,0.0005,40,3.200,0.1)
+system = DMR(0.02,35,0.0005,40,3200,0.1)
 
 rng_0 = Generator(PCG64())
 
@@ -147,21 +147,54 @@ start_time = time.time()
 
 # Lista delle posizioni di un treno a velocità costante 35 con 500 sample
 
-fig, (ax_vel, ax_dist) = plt.subplots(1, 2, figsize=(12, 5))
-ax_vel.set_ylim(30, 40)
-for _ in range(Nsim):
-    vtraj, straj, cstraj, ttraj = system.simulateTraj(1000,10000)
-    ax_vel.plot(ttraj, vtraj, color='gray')
-    ax_dist.plot(ttraj, cstraj-straj)
-    # for i in range(Nbins):
-    #     if ptraj[-1] < (m*(i+1)+omega[0]):
-    #         bins[i] += 1.0
-    #         break
+fig, (ax_vel, ax_spacegap, ax_dist) = plt.subplots(1, 3, figsize=(12, 5))
+ax_vel.set_ylim(15, 40)
+ax_dist.set_ylim(3000, 3400)
 
+all_gap = []
+all_vgap = []
+all_acc = []
+all_d_gap = []
+all_d_vgap = []
+
+for _ in range(Nsim):
+    vtraj, straj, cstraj, ttraj = system.simulateTraj(1000,1000)
+    ax_vel.plot(ttraj, vtraj, color='gray', linewidth=0.5)
+    ax_spacegap.plot(ttraj, cstraj-straj, color='gray', linewidth=0.5)
+    ax_dist.plot(ttraj, 3200+cstraj-straj, color='gray', linewidth=0.5)
+
+    gap =  straj - cstraj
+    vgap = vtraj - system.vcruise
+    acc = np.gradient(vtraj, ttraj[1] - ttraj[0])
+    dt = ttraj[1] - ttraj[0]
+    d_gap = np.gradient(gap, dt)
+    d_vgap = np.gradient(vgap, dt)
+
+    #step = 50  # aumenta per meno frecce
+    all_gap.append(gap[:500])
+    all_vgap.append(vgap[:500])
+    all_acc.append(acc[:500])
+    all_d_gap.append(d_gap[:500])
+    all_d_vgap.append(d_vgap[:500])
+    
+gap_q = np.concatenate(all_gap)
+vgap_q = np.concatenate(all_vgap)
+acc_q = np.concatenate(all_acc)
+d_gap_q = np.concatenate(all_d_gap)
+d_vgap_q = np.concatenate(all_d_vgap)
 
 end_time = time.time()
 print(f"Simulation time: {end_time - start_time:.2f} seconds")
+
+plt.figure(figsize=(8,6))
+q = plt.quiver(gap_q, vgap_q, d_gap_q, d_vgap_q, acc_q, cmap='coolwarm', scale=20)
+plt.xlabel("space gap wrt constant speed (m)")
+plt.ylabel("speed gap wrt constant speed (m/s)")
+cbar = plt.colorbar(q, label="acceleration (m/s²)")
+plt.title("Phase space vector field (aggregated)")
 plt.show()
+plt.show()
+
 #bins = bins/(Nsim*m)
 
 
