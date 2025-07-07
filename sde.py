@@ -7,6 +7,7 @@
 import numpy as np
 from numpy.random import Generator, PCG64
 import matplotlib.pyplot as plt
+import time
 
 class DMR(object):
     '''
@@ -28,7 +29,7 @@ class DMR(object):
         self.b = b
         self.vcruise = vcruise
         self.vmax = vmax
-        self.x0 = x0
+        self.x0 =- x0
         self.sigma = sigma
         if(a<=0 or b<=0 or vcruise<=0 or vmax<=0):
             raise RuntimeError("One of the given parameters is 0 or negative")
@@ -63,7 +64,7 @@ class DMR(object):
             raise RuntimeError("Given h is negative or 0")
 
         v = lambda tn,vt,st: self.b*(self.vcruise-vt)+self.a*(self.vcruise*tn-st) ### <- changed the function to the deterministic part of the PLS
-        s = lambda tn,vt:   vt*tn
+        s = lambda tn,vt:   vt*h
         
 
         Vk_1 = v(t_n,       v_t,          s_t)
@@ -80,7 +81,16 @@ class DMR(object):
 
         return (h*(Vk_1+2*Vk_2+2*Vk_3+Vk_4)/6, h*(Sk_1+2*Sk_2+2*Sk_3+Sk_4)/6)
         
+    def __euler_maruyama(self,tn: float, vt:float, st:float, h: float)->float:
+        #ito for
+        #h=dt
+        dW= np.random.normal()*np.sqrt(h)
+        sigmahat=(vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise))*self.sigma
         
+        dv = (self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))*h + sigmahat*dW
+        ds = vt*h
+        print(vt," ", h, " ", self.vcruise*tn-st)
+        return dv,ds 
     
     def simulateTraj(self,T: float,N: int): 
         '''
@@ -93,24 +103,65 @@ class DMR(object):
 
         if T==0:
             return np.array([self.vcruise])
+        
 
         #Setup step lenght and traj array
         h = T/N
         v = np.zeros(N+1,dtype=float)
         v[0] = self.vcruise
         s = np.zeros(N+1,dtype=float)
-        s[0] = self.x0
+        s[0] = -self.x0
         time = np.zeros(N+1,dtype=float)
-        time[0] = time
+        time[0] = 0
+        cs= np.zeros(N+1,dtype=float)
+        cs[0] = 0
         #Setup random generator
-        rng = Generator(PCG64())
 
+        rng = Generator(PCG64())
         for i in range(1,N+1):
             time[i] = i*h
-            dv, ds = self.__RK4(time[i-1],v[i-1],s[i-1],h) #determinstic part
-            sig=(v[i-1]*(self.vmax-v[i-1]))/(self.vcruise*(self.vmax-self.vcruise))
-            dv += self.sigma(np.sqrt(sig))*rng.normal()*np.sqrt(h) #noise part
-            traj[i] = traj[i-1] + dx
-            if traj[i]<0: traj[i]=0.0
+            dv, ds = self.__euler_maruyama(time[i-1],v[i-1],s[i-1],h)
+            #dv, ds = self.__RK4(time[i-1],v[i-1],s[i-1],h)
+            #dv+=(v[i-1]*(self.vmax-v[i-1]))/(self.vcruise*(self.vmax-self.vcruise))*rng.normal()*np.sqrt(h)
+            v[i] = v[i-1] + dv
+            s[i] = s[i-1] + ds
+            cs[i]= self.vcruise*(time[i]+h)
+        return v, s, cs, time
+    
 
-        return traj,time
+omega = [0.0,1.0] 
+Nbins = 150 
+Nsim = 1
+m = (omega[1]-omega[0])/Nbins
+
+system = DMR(0.02,35,0.0005,40,3.200,0.1)
+
+rng_0 = Generator(PCG64())
+
+bins = np.zeros(Nbins,dtype=float)
+
+# Crea una figura con due subplot affiancati per velocità e distanza
+
+print("starting")
+start_time = time.time()
+
+# Lista delle posizioni di un treno a velocità costante 35 con 500 sample
+
+fig, (ax_vel, ax_dist) = plt.subplots(1, 2, figsize=(12, 5))
+ax_vel.set_ylim(30, 40)
+for _ in range(Nsim):
+    vtraj, straj, cstraj, ttraj = system.simulateTraj(1000,10000)
+    ax_vel.plot(ttraj, vtraj, color='gray')
+    ax_dist.plot(ttraj, cstraj-straj)
+    # for i in range(Nbins):
+    #     if ptraj[-1] < (m*(i+1)+omega[0]):
+    #         bins[i] += 1.0
+    #         break
+
+
+end_time = time.time()
+print(f"Simulation time: {end_time - start_time:.2f} seconds")
+plt.show()
+#bins = bins/(Nsim*m)
+
+
