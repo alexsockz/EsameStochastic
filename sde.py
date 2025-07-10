@@ -8,7 +8,7 @@ import numpy as np
 from numpy.random import Generator, PCG64
 import matplotlib.pyplot as plt
 import time
-
+import sklearn.preprocessing as pre
 class DMR(object):
     '''
     This function will simulate speed of a train and relative space between it and a train in front of it.
@@ -86,7 +86,7 @@ class DMR(object):
         #h=dt
         dW= np.random.normal()*np.sqrt(h)
         sigmahat=np.sqrt((vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise)))*self.sigma
-        
+        #TODO: CAMBIARE DA FORMA DI ITO A FORMA DI STRATONOVITCH, PIU CORRETTO PER IL RUMORE CHE HO, PRIMA PERO' SALVA GRAFICI DI ITO
         dv = (self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))*h + sigmahat*dW
         ds = vt*h
         #print(vt," ", h, " ", self.vcruise*tn-st)
@@ -167,6 +167,9 @@ for _ in range(Nsim):
     vgap = vtraj - system.vcruise
     acc = np.gradient(vtraj, ttraj[1] - ttraj[0])
     dt = ttraj[1] - ttraj[0]
+
+    gap = pre.normalize(gap.reshape(1, -1), norm="l2").flatten()
+    vgap = pre.normalize(vgap.reshape(1, -1), norm="l2").flatten()
     d_gap = np.gradient(gap, dt)
     d_vgap = np.gradient(vgap, dt)
 
@@ -187,12 +190,11 @@ end_time = time.time()
 print(f"Simulation time: {end_time - start_time:.2f} seconds")
 
 plt.figure(figsize=(8,6))
-q = plt.quiver(gap_q, vgap_q, d_gap_q, d_vgap_q, acc_q, cmap='coolwarm', scale=20)
+q = plt.quiver(gap_q, vgap_q, d_gap_q, d_vgap_q, acc_q, cmap='coolwarm', scale=0.8)
 plt.xlabel("space gap wrt constant speed (m)")
 plt.ylabel("speed gap wrt constant speed (m/s)")
 cbar = plt.colorbar(q, label="acceleration (m/s²)")
 plt.title("Phase space vector field (aggregated)")
-plt.show()
 plt.show()
 
 #bins = bins/(Nsim*m)
