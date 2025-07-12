@@ -7,7 +7,9 @@
 import numpy as np
 from numpy.random import Generator, PCG64
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import time
+import multiprocessing as mp
 
 class trainModel(object):
     '''
@@ -65,6 +67,7 @@ class trainModel(object):
         dW= np.random.normal()*np.sqrt(h)
         sigmahat=np.sqrt((vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise)))*self.sigma
         
+        #TODO: need to change ito to stratonovich
         dv = (self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))*h + sigmahat*dW
         ds = vt*h
         #print(vt," ", h, " ", self.vcruise*tn-st)
@@ -119,21 +122,20 @@ class trainModel(object):
                 tobreak =True
             elif dist[i] >= self.x0:
                 tobreak = False
-        return v, s, cs,dist, time
+        return v, s, cs, dist, time
     
-    def create_plots(self, plot, vtraj, straj, cstraj, distraj, ttraj):
-        fig, (ax_vel, ax_spacegap, ax_dist) = plot
+    def create_plots(self, plot, vtraj, distraj, ttraj):
+        fig, (ax_vel, ax_dist) = plot
         ax_vel.set_ylim(15, 40) #da cambiare se si vuole
         ax_dist.set_ylim(3000, 4500)  #da cambiare se si vuole
         ax_vel.plot(ttraj, vtraj, color='gray', linewidth=0.5)
-        ax_spacegap.plot(ttraj, cstraj-straj, color='gray', linewidth=0.5)
         ax_dist.plot(ttraj, distraj, color='gray', linewidth=0.5)
 
-        return fig, (ax_vel, ax_spacegap, ax_dist)
+        return fig, (ax_vel, ax_dist)
 
 omega = [0.0,1.0] 
 Nbins = 150 
-Nsim = 50
+Nsim = 2000
 m = (omega[1]-omega[0])/Nbins
                     #b, vcruise, a, vmax, x0, sigma, breaking, select_model
 system = trainModel(0.02,35,0.0005,40,3200,0.1, 0.55, "CIR")
@@ -142,24 +144,51 @@ rng_0 = Generator(PCG64())
 
 bins = np.zeros(Nbins,dtype=float)
 
-# Crea una figura con due subplot affiancati per velocità e distanza
+    # Crea una figura con due subplot affiancati per velocità e distanza
 
 print("starting")
 start_time = time.time()
 
-# Lista delle posizioni di un treno a velocità costante 35 con 500 sample
+    # Lista delle posizioni di un treno a velocità costante 35 con 500 sample
 
+all_headway = []
+all_speed = []
 
+# Create the first figure with 3 subplots for time series plots
+fig1 = plt.subplots(1, 2, figsize=(12, 5))
+fig2 = plt.figure(figsize=(8, 5))
+ax2 = fig2.add_subplot(111)
 
-plot = plt.subplots(1, 3, figsize=(12, 5))
-for _ in range(Nsim):
-    vtraj, straj, cstraj, distraj, ttraj = system.simulateTraj(1000,1000)
-    system.create_plots(plot, vtraj, straj, cstraj, distraj, ttraj)
+for i in range(Nsim):
+    vtraj, straj, cstraj, distraj, ttraj = system.simulateTraj(1000, 1000)
+    if(i%25==0):
+        system.create_plots(fig1, vtraj, distraj, ttraj)
+    all_speed.append(vtraj)
+    all_headway.append(distraj)
 
-plt.show()
+headway_q = np.concatenate(all_headway) / 1000
+speed_q = np.concatenate(all_speed)
 
 end_time = time.time()
 print(f"Simulation time: {end_time - start_time:.2f} seconds")
+
+# Create the second figure for the 2D histogram
+h = ax2.hist2d(headway_q, speed_q, bins=50, norm=mpl.colors.LogNorm(), cmap=mpl.cm.Blues)
+plt.xlabel("headway (km)")
+plt.ylabel("speed follower (m/s)")
+ax2.set_xlim(3, 4.5)
+ax2.set_ylim(18,42)
+cb = plt.colorbar(h[3])
+cb.set_label("Bin Counts")
+plt.tight_layout()
+
+fig, axs = fig1
+
+fig.savefig("CIR_ito_speed_and_distance.svg",format='svg')
+fig2.savefig("CIR_ito_speed_to_distance.svg",format='svg')
+plt.show()
+
+# Now, plot contains the first figure with subplots, and fig2 is the histogram figure
 
 
 
