@@ -17,7 +17,7 @@ class trainModel(object):
     '''
     #changed the parameters
 #                            
-    def __init__(self, b:float, vcruise:float, a: float, vmax:float, x0:float, sigma:float, breaking:float, select_model:str) ->None:
+    def __init__(self, Ntrains:float, b:float, vcruise:float, a: float, vmax:float, x0:float, dmin:float, sigma:float, breaking:float, select_model:str) ->None:
         '''
         - Parameters:
         beta: strength of mean reversion to the mean level vcruise
@@ -27,7 +27,8 @@ class trainModel(object):
         x0: initial position of the train with respect of the train in front of it
         sigma: noise strength
         '''
-
+        self.dmin=dmin
+        self.Ntrains=Ntrains
         self.b = b
         self.vcruise = vcruise
         self.vmax = vmax
@@ -37,7 +38,8 @@ class trainModel(object):
         
         if(a<=0 or b<=0 or vcruise<=0 or vmax<=0):
             raise RuntimeError("One of the given parameters is 0 or negative")
-        
+        if(dmin>x0):
+            raise RuntimeError("the minimum distance must be less then the starting distance")
         if select_model not in ["CIR", "DMR"]:
             raise RuntimeError("The selected model is not supported, please choose between 'CIR' and 'DMR'")
         elif select_model == "CIR":
@@ -51,6 +53,7 @@ class trainModel(object):
         Given the inputs for a trajectory, this method will
         check if they are correct
         '''
+
         #T checks:
         if T<0:
             raise RuntimeError("Time interval must have a positive lenght")
@@ -61,15 +64,25 @@ class trainModel(object):
 
         return
       
-    def __euler_maruyama(self,tn: float, vt:float, st:float, h: float)->float:
+    def __euler_maruyama(self,tn: float, vt:float, st:float, dv_prec:float, h: float)->float:
         #ito for
         #h=dt
         dW= np.random.normal()*np.sqrt(h)
         sigmahat=np.sqrt((vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise)))*self.sigma
         
+        dsigmahat=(self.sigma*dv_prec*(self.vmax-(2*vt)))/np.sqrt(4*self.vcruise*(self.vmax-self.vcruise)*vt*(self.vmax-vt))
+        
         #TODO: need to change ito to stratonovich
-        dv = (self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))*h + sigmahat*dW
-        ds = vt*h
+        
+        # ito
+        # dv = (self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))*h + sigmahat*dW
+        # ds = vt*h
+        
+        a=(self.b*(self.vcruise-vt)+ self.a*(self.vcruise*tn-st))
+        
+        dv=(a+0.5*sigmahat*dsigmahat)*h+sigmahat*dW
+        ds=vt*h
+        
         #print(vt," ", h, " ", self.vcruise*tn-st)
         return dv,ds 
     
@@ -80,7 +93,7 @@ class trainModel(object):
     
     def simulateTraj(self,T: float,N: int): 
         '''
-        Given the initial population value x0, the considered interval lenght T
+        Given the initial populatibreakedAton value x0, the considered interval lenght T
         and the number of step in the computation N, this method will return a
         trajectory for the PLS.
         '''
@@ -103,26 +116,31 @@ class trainModel(object):
         cs[0] = 0
         dist= np.zeros(N+1,dtype=float)
         dist[0] = self.x0
-        #Setup random generator
+        dv=0
+        ds=0
+        breakedAt=[]
 
+        #Setup random generator
         rng = Generator(PCG64())
         for i in range(1,N+1):
             time[i] = i*h
             if tobreak:
-                dv, ds = self.__determinsticChange(self.breaking, v[i-1], h)
+                dv, ds = self.__determ3insticChange(self.breaking, v[i-1], h)
             else:    
-                dv, ds = self.__euler_maruyama(time[i-1],v[i-1],s[i-1],h)
+                dv, ds = self.__euler_maruyama(time[i-1],v[i-1],s[i-1], dv, h)
     
             v[i] = v[i-1] + dv
             s[i] = s[i-1] + ds
             cs[i]= self.vcruise*(time[i])
             dist[i]= self.x0+cs[i]-s[i] 
 
-            if dist[i] < 3000:
+            if dist[i] < self.dmin:
+                if tobreak==False:
+                    breakedAt.append(i)
                 tobreak =True
             elif dist[i] >= self.x0:
                 tobreak = False
-        return v, s, cs, dist, time
+        return v, s, cs, dist, time, breakedAt
     
     def create_plots(self, plot, vtraj, distraj, ttraj):
         fig, (ax_vel, ax_dist) = plot
@@ -133,102 +151,75 @@ class trainModel(object):
 
         return fig, (ax_vel, ax_dist)
 
-omega = [0.0,1.0] 
-Nbins = 150 
-Nsim = 2000
-m = (omega[1]-omega[0])/Nbins
-                    #b, vcruise, a, vmax, x0, sigma, breaking, select_model
-system = trainModel(0.02,35,0.0005,40,3200,0.1, 0.55, "CIR")
+#---------------------------------------------------------------------------------------------------------------    
+for s in ["DMR","CIR"]:
+    all_headway = []
+    all_speed = []
 
-rng_0 = Generator(PCG64())
+    # Create the first figure with 2 subplots for time series plots
+    fig1 = plt.subplots(1, 2, figsize=(12, 5))
+    
+    #relationship between speed and distance from front train
+    fig2 = plt.figure(figsize=(8, 5))
+    ax2 = fig2.add_subplot(111)
+    
+    #pdf of first break
+    fig3 = plt.figure(figsize=(8, 5))
+    ax3 = fig3.add_subplot(111)
+    
+    Nsim = 500
+    #Ntreni, b, vcruise, a, vmax, x0, min dist, sigma, breaking, select_model
+    args= (1,0.02,35,0.0005,40,3200,3000, 0.1, 0.55, s)
+    period=(5000, 5000)
+    
+    system = trainModel(*args)
 
-bins = np.zeros(Nbins,dtype=float)
+    print("starting")
+    start_time = time.time()
 
-    # Crea una figura con due subplot affiancati per velocità e distanza
+            #T    #N
+    distr_of_breaks=np.zeros(period[1]+1)
 
-print("starting")
-start_time = time.time()
+    for i in range(Nsim):
+        vtraj, straj, cstraj, distraj, ttraj, breakedAt = system.simulateTraj(*period)
+        for point in breakedAt:
+            distr_of_breaks[point]+=1
+            break
+        if(i%25==0):
+            system.create_plots(fig1, vtraj, distraj, ttraj)
+        all_speed.append(vtraj)
+        all_headway.append(distraj)
 
-    # Lista delle posizioni di un treno a velocità costante 35 con 500 sample
+    headway_q = np.concatenate(all_headway) / 1000
+    speed_q = np.concatenate(all_speed)
 
-all_headway = []
-all_speed = []
+    end_time = time.time()
+    print(f"Simulation time: {end_time - start_time:.2f} seconds")
 
-# Create the first figure with 3 subplots for time series plots
-fig1 = plt.subplots(1, 2, figsize=(12, 5))
-fig2 = plt.figure(figsize=(8, 5))
-ax2 = fig2.add_subplot(111)
+    # Create the second figure for the 2D histogram
+    h = ax2.hist2d(headway_q, speed_q, bins=50, norm=mpl.colors.LogNorm(), cmap=mpl.cm.Blues)
+    ax2.set_xlabel("headway (km)")
+    ax2.set_ylabel("speed follower (m/s)")
+    ax2.set_xlim(3, 4.5)
+    ax2.set_ylim(18,42)
+    cb = fig2.colorbar(h[3],ax=ax2)
+    cb.set_label("Bin Counts")
 
-for i in range(Nsim):
-    vtraj, straj, cstraj, distraj, ttraj = system.simulateTraj(1000, 1000)
-    if(i%25==0):
-        system.create_plots(fig1, vtraj, distraj, ttraj)
-    all_speed.append(vtraj)
-    all_headway.append(distraj)
-
-headway_q = np.concatenate(all_headway) / 1000
-speed_q = np.concatenate(all_speed)
-
-end_time = time.time()
-print(f"Simulation time: {end_time - start_time:.2f} seconds")
-
-# Create the second figure for the 2D histogram
-h = ax2.hist2d(headway_q, speed_q, bins=50, norm=mpl.colors.LogNorm(), cmap=mpl.cm.Blues)
-plt.xlabel("headway (km)")
-plt.ylabel("speed follower (m/s)")
-ax2.set_xlim(3, 4.5)
-ax2.set_ylim(18,42)
-cb = plt.colorbar(h[3])
-cb.set_label("Bin Counts")
-plt.tight_layout()
-
-fig, axs = fig1
-
-fig.savefig("CIR_ito_speed_and_distance.svg",format='svg')
-fig2.savefig("CIR_ito_speed_to_distance.svg",format='svg')
-plt.show()
-
-# Now, plot contains the first figure with subplots, and fig2 is the histogram figure
-
-
-
-#bins = bins/(Nsim*m)
+    # Bin brake events into groups of 10 time steps
+    bin_size = 50
+    binned_breaks = np.add.reduceat(distr_of_breaks, np.arange(0, period[1]+1, bin_size))
+    binned_breaks=binned_breaks/np.sum(binned_breaks)
 
 
+    bar=ax3.bar(np.arange(len(binned_breaks)), binned_breaks, color='gray', align='edge')
+    ax3.set_xlabel("Time step of brake event (binned every 10 steps)")
+    ax3.set_ylabel("Number of brake events")
+    ax3.set_title("Histogram of Brake Events Over Time (10-step bins)")
+    #plt.xlim(0, period[1])
 
-        # all_gap = []
-        # all_vgap = []
-        # all_acc = []
-        # all_d_gap = []
-        # all_d_vgap = []
+    plt.tight_layout()
 
-
-
-        # gap =  straj - cstraj
-        # vgap = vtraj - system.vcruise
-        # acc = np.gradient(vtraj, ttraj[1] - ttraj[0])
-        # dt = ttraj[1] - ttraj[0]
-        # d_gap = np.gradient(gap, dt)
-        # d_vgap = np.gradient(vgap, dt)
-
-
-        # #step = 50  # aumenta per meno frecce
-        # all_gap.append(gap[:500])
-        # all_vgap.append(vgap[:500])
-        # all_acc.append(acc[:500])
-        # all_d_gap.append(d_gap[:500])
-        # all_d_vgap.append(d_vgap[:500])
-            
-        # gap_q = np.concatenate(all_gap)
-        # vgap_q = np.concatenate(all_vgap)
-        # acc_q = np.concatenate(all_acc)
-        # d_gap_q = np.concatenate(all_d_gap)
-        # d_vgap_q = np.concatenate(all_d_vgap)
-
-        # plt.figure(figsize=(8,6))
-        # plt.quiver(gap_q, vgap_q, d_gap_q, d_vgap_q, acc_q, cmap='coolwarm', scale=20)
-        # plt.xlabel("space gap wrt constant speed (m)")
-        # plt.ylabel("speed gap wrt constant speed (m/s)")
-        # plt.colorbar(q, label="acceleration (m/s²)")
-        # plt.title("Phase space vector field (aggregated)")
-        # plt.show()
+    filedata= '_'.join([str(s) for s in args])
+    fig1[0].savefig("plots/"+filedata+"_5000_stratonovich_speed_and_distance.svg",format='svg')
+    fig2.savefig("plots/"+filedata+"_5000_stratonovich_speed_to_distance.svg",format='svg')
+    fig3.savefig("plots/"+filedata+"_5000_stratonovich_pdf_first_break.svg",format='svg')
