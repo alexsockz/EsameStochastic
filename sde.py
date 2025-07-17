@@ -8,10 +8,12 @@ import numpy as np
 from numpy.random import Generator, PCG64
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from time import perf_counter
 import time
 import multiprocessing as mp
 import warnings
-
+from itertools import chain
+from numba import njit
 
 class trainModel(object):
     '''
@@ -48,6 +50,9 @@ class trainModel(object):
             self.a = 0.0
         elif select_model == "DMR":
             self.a = a
+
+        self.stratonovich_constant=0.5*(self.sigma*self.sigma)/(4*(self.vcruise*(self.vmax-self.vcruise)))
+        self.sigmahat_constant=(self.sigma*self.sigma)/(self.vcruise*(self.vmax-self.vcruise))
         return
 
     def __checkInputs(self,T: float,N: int)->None:
@@ -65,36 +70,36 @@ class trainModel(object):
             raise RuntimeError("The simulation must have at least two steps")
 
         return
-      
-    def __euler_maruyama(self,tn: float, vt:float, st:float, dv_prec:float, sPrec:float, h: float)->float:
+    
+    @staticmethod
+    @njit 
+    def __euler_maruyama(a:float,  b: float, stratonovich_constant:float, sigmahat_constant:float, vcruise:float, vmax:float, vt:float, st:float, dv_prec:float, sPrec:float, h: float)->float:
         #ito for
         #h=dt
-        dW= np.random.normal()*np.sqrt(h)
-        try:
-            sigmahat=np.sqrt((vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise)))*self.sigma
-
-            dsigmahat=(self.sigma*dv_prec*(self.vmax-(2*vt)))/np.sqrt(4*self.vcruise*(self.vmax-self.vcruise)*vt*(self.vmax-vt))
-        except RuntimeWarning:
-            print(self.a*(sPrec-st)," ",self.b*(self.vcruise-vt),"vt: ",vt, " ",(vt*(self.vmax-vt))/(self.vcruise*(self.vmax-self.vcruise)))
-            sigmahat=0
-            dsigmahat=0
-            #TODO: need to change ito to stratonovich
-        
 
         #PROBLEMA se la distanza tra sPrec e st è troppo elevata sovrasta la tendenza alla media e quindi devo limitare a,
         #SOLUZIONE min(vt, 40) se 40 allora a=0
         #ALTERNATIVA PIU FICA, LIMITARE sPrec-st con una sigmoide
-        limiter=1 / (1 + np.exp(-self.vmax+vt))
-        a=(self.b*(self.vcruise-vt)+ self.a*(sPrec-st)*limiter)
-       
+        
+        #stochastic part
+        sigmahat=np.sqrt((vt*(vmax-vt))*sigmahat_constant)
+        dW= np.random.normal()*np.sqrt(h)
+        
+        #the limiter must be smooth and be o in vmax
+        #limiter=1 / (1 + np.exp(-self.vmax+vt))vt/self.vmax
+        limiter=1-np.power(vt/vmax,vcruise)
+        a=(b*(vcruise-vt)+ a*(sPrec-st)*limiter)
+
+        
         # ito
 
         # dv = a*h + sigmahat*dW
         # ds = vt*h
         
         #stratonovich
-        
-        dv=(a+0.5*sigmahat*dsigmahat)*h+sigmahat*dW
+        #b=(1/2)f'(x)f(x)
+        b=stratonovich_constant*dv_prec*(vmax-(2*vt))
+        dv=(a+b)*h+sigmahat*dW
         ds=vt*h
         
         #print(vt," ", h, " ", self.vcruise*tn-st)
@@ -105,12 +110,13 @@ class trainModel(object):
         ds = vt * h
         return dv, ds
     
-    def simulateTraj(self,T: float,N: int): 
+    def simulateTraj(self, period: tuple[float, int]): 
         '''
         Given the initial populatibreakedAton value x0, the considered interval lenght T
         and the number of step in the computation N, this method will return a
         trajectory for the PLS.
         '''
+        T,N=period
         #Check the inputs
         self.__checkInputs(T,N)
 
@@ -138,35 +144,49 @@ class trainModel(object):
 
         breakedAt=np.empty((self.Ntrains+1,), dtype=object)
         breakedAt.fill([])
-
+        
         #Setup random generator
         rng = Generator(PCG64())
         for i in range(1,N+1):
             time[i] = i*h
             v[0,i]= self.vcruise
             s[0,i]= self.vcruise*(time[i])
+            
             for train in range(1, self.Ntrains+1):
                 if tobreak[train]:
                     dv[train], ds[train] = self.__determinsticChange(self.breaking, v[train,i-1], h)
                 else:    
-                    dv[train], ds[train] = self.__euler_maruyama(time[i-1],v[train, i-1],s[train, i-1], dv[train], s[train-1,i-1], h)
-        
+                    dv[train], ds[train] = self.__euler_maruyama(
+                        self.a,
+                        self.b,
+                        self.stratonovich_constant,
+                        self.sigmahat_constant,
+                        self.vcruise,
+                        self.vmax,
+                        v[train, i-1],
+                        s[train, i-1],
+                        dv[train],
+                        s[train-1,i-1],
+                        h
+                        )
                 v[train, i] = v[train, i-1] + dv[train]
                 if v[train, i]<=0:
                     v[train, i]=0
                     dv[train]=-v[train, i-1]
                 s[train, i] = s[train, i-1] + ds[train]
                 dist[train, i]= self.x0+s[train-1,i]-s[train,i] 
-
+                
                 if dist[train, i] < self.dmin and train!=1:
                     if tobreak[train] == False:
                         breakedAt[train].append(i)
                     tobreak[train] = True
                 elif dist[train, i] >= self.x0:
                     tobreak[train] = False
+
         return v, s, dist, time, breakedAt
     
-    def create_plots(self, plot, vtraj, distraj, ttraj):
+    @staticmethod
+    def create_plots(plot, vtraj, distraj, ttraj):
         fig, (ax_vel, ax_dist) = plot
         #ax_vel.set_ylim(10, 40) #da cambiare se si vuole
         #ax_dist.set_ylim(3000, 4500)  #da cambiare se si vuole
@@ -174,83 +194,126 @@ class trainModel(object):
         ax_dist.plot(ttraj, distraj, color='gray', linewidth=0.5)
 
         return fig, (ax_vel, ax_dist)
-
-#---------------------------------------------------------------------------------------------------------------    
-for s in ["CIR"]:
-    all_headway = []
-    all_speed = []
     
-    # Create the first figure with 2 subplots for time series plots
-    fig1 = plt.subplots(1, 2, figsize=(12, 5))
-    
-    #relationship between speed and distance from front train
-    fig2 = plt.figure(figsize=(8, 5))
-    ax2 = fig2.add_subplot(111)
-    
-    #pdf of first break
-    fig3 = plt.figure(figsize=(8, 5))
-    ax3 = fig3.add_subplot(111)
-    
-    Nsim = 500
-    #Ntreni, b, vcruise, a, vmax, x0, min dist, sigma, breaking, select_model
-
-    trainToFollow=4
-    args= (4,0.02,35,0.0005,40,3200,3000, 0.1, 0.55, s)
-    period=(5000, 5000)
-    
+def pool_wrapper(period, args):
     system = trainModel(*args)
+    res= system.simulateTraj(period)
+    return res
+#---------------------------------------------------------------------------------------------------------------    
+if __name__ == '__main__':
+    pool=mp.Pool()
+    start=perf_counter()
+    for trainToFollow in range(1,10):
+        for s in ["DMR","CIR"]:
+            a=perf_counter()
+            all_headway = []
+            all_speed = []
+            
+            # Create the first figure with 2 subplots for time series plots
+            fig1 = plt.subplots(1, 2, figsize=(12, 5))
+            
+            #relationship between speed and distance from front train
+            fig2 = plt.figure(figsize=(8, 5))
+            ax2 = fig2.add_subplot(111)
+            
+            #pdf of first break
+            fig3 = plt.figure(figsize=(8, 5))
+            ax3 = fig3.add_subplot(111)
+            
+            Nsim = 500
+            #Ntreni, b, vcruise, a, vmax, x0, min dist, sigma, breaking, select_model
 
-    print("starting")
-    start_time = time.time()
+            args= (trainToFollow,0.02,35,0.0005,40,3200,3000, 0.1, 0.55, s)
+            
+            b=perf_counter()
+            print("assegnazione ", b-a)
 
-            #T    #N
-    distr_of_breaks=np.zeros(period[1]+1)
+            period =(5000,5000)
+            distr_of_breaks=np.zeros(period[1]+1)
+            try:
+                jobs_args=[(period,args)] * Nsim
+                chunksize= int(np.ceil(len(jobs_args)/mp.cpu_count()))
+                print("inizio parallel")
+                results_handler=pool.starmap_async(pool_wrapper,jobs_args,chunksize)
+                print("continuo parallel")
+                #vtraj, straj, distraj, ttraj, breakedAt =zip(*results_handler.get())
+                results= results_handler.get()
+                print("fine parallel")
+            except Exception as e:
+                pool.terminate()
+                raise e
+            c=perf_counter()
+            print("esecuzione ", c-b, " total ",c-a)
 
-    warnings.filterwarnings("error")
-    for i in range(Nsim):
-        vtraj, straj, distraj, ttraj, breakedAt = system.simulateTraj(*period)
-        if(breakedAt[trainToFollow]!=[]):
-            distr_of_breaks[breakedAt[trainToFollow][0]]+=1
-        # for point in breakedAt[trainToFollow]:
-        #     #print(point)
-        #     distr_of_breaks[point]+=1
-        if(i%14==0):
-            system.create_plots(fig1, vtraj[trainToFollow], distraj[trainToFollow], ttraj)
-        all_speed.append(vtraj[trainToFollow])
-        all_headway.append(distraj[trainToFollow])
-    warnings.filterwarnings("ignore")
+            i=0
+            for vtraj, straj, distraj, ttraj, breakedAt in results:
+                i+=1
+                if(breakedAt[trainToFollow]!=[]):
+                    distr_of_breaks[breakedAt[trainToFollow][0]]+=1
+            # for point in breakedAt[trainToFollow]:
+            #     #print(point)
+            #     distr_of_breaks[point]+=1
+                if(i%4==0):
+                    trainModel.create_plots(fig1, vtraj[trainToFollow], distraj[trainToFollow], ttraj)
+                all_speed.append(vtraj[trainToFollow])
+                all_headway.append(distraj[trainToFollow])
 
-    headway_q = np.concatenate(all_headway) / 1000
-    speed_q = np.concatenate(all_speed)
+            # for i in range(Nsim):
+                
+            #     vtraj, straj, distraj, ttraj, breakedAt = system.simulateTraj(period)
 
-    end_time = time.time()
-    print(f"Simulation time: {end_time - start_time:.2f} seconds")
+            #     if(breakedAt[trainToFollow]!=[]):
+            #         distr_of_breaks[breakedAt[trainToFollow][0]]+=1
+            #     # for point in breakedAt[trainToFollow]:
+            #     #     #print(point)
+            #     #     distr_of_breaks[point]+=1
 
-    # Create the second figure for the 2D histogram
-    h = ax2.hist2d(headway_q, speed_q, bins=50, norm=mpl.colors.LogNorm(), cmap=mpl.cm.Blues)
-    ax2.set_xlabel("headway (km)")
-    ax2.set_ylabel("speed follower (m/s)")
-    #ax2.set_xlim(3, 4.5)
-    #ax2.set_ylim(10,42)
-    cb = fig2.colorbar(h[3],ax=ax2)
-    cb.set_label("Bin Counts")
+            #     if(i%14==0):
+            #         system.create_plots(fig1, vtraj[trainToFollow], distraj[trainToFollow], ttraj)
+            #     all_speed.append(vtraj[trainToFollow])
+            #     all_headway.append(distraj[trainToFollow])
+            headway_q=np.concatenate(all_headway)/1000
+            speed_q=np.concatenate(all_speed)
+            # headway_q =np.stack([arr[trainToFollow] for arr in distraj]).flatten()
+            # speed_q = np.stack([arr[trainToFollow] for arr in vtraj]).flatten()
+            # print(type(headway_q), np.shape(headway_q))
+            # time_q=np.fromiter(chain.from_iterable(ttraj),float)
+            # trainModel.create_plots(fig1,speed_q,headway_q,time_q)
 
-    # Bin brake events into groups of 10 time steps
-    bin_size = 50
-    binned_breaks = np.add.reduceat(distr_of_breaks, np.arange(0, period[1]+1, bin_size))
-    binned_breaks=binned_breaks/np.sum(binned_breaks)
+            d=perf_counter()
+            print("assegnazione risultati ",d-c,"total ",d-a)
 
+            # Create the second figure for the 2D histogram
+            h = ax2.hist2d(headway_q, speed_q, bins=50, norm=mpl.colors.LogNorm(), cmap=mpl.cm.Blues)
+            ax2.set_xlabel("headway (km)")
+            ax2.set_ylabel("speed follower (m/s)")
+            #ax2.set_xlim(3, 4.5)
+            #ax2.set_ylim(10,42)
+            cb = fig2.colorbar(h[3],ax=ax2)
+            cb.set_label("Bin Counts")
 
-    bar=ax3.bar(np.arange(len(binned_breaks)), binned_breaks, color='gray', align='edge')
-    ax3.set_xlabel("Time step of brake event (binned every 10 steps)")
-    ax3.set_ylabel("Number of brake events")
-    ax3.set_title("Histogram of Brake Events Over Time (10-step bins)")
-    #plt.xlim(0, period[1])
+            # Bin brake events into groups of 10 time steps
+            bin_size = 50
+            binned_breaks = np.add.reduceat(distr_of_breaks, np.arange(0, period[1]+1, bin_size))
+            binned_breaks_perc=np.nan_to_num(binned_breaks/np.sum(binned_breaks),nan=0, posinf=0,neginf=0)
+            print(np.sum(binned_breaks))
+            if(np.sum(binned_breaks)!=0):    
+                bar=ax3.bar(np.arange(len(binned_breaks_perc)), binned_breaks_perc, color='gray', align='edge')
+                ax3.set_xlabel("Time step of brake event (binned every 10 steps)")
+                ax3.set_ylabel("Number of brake events, total "+ str(np.sum(binned_breaks)))
+                ax3.set_title("Histogram of Brake Events Over Time (10-step bins)")
+            #plt.xlim(0, period[1])
 
-    plt.tight_layout()
+            plt.tight_layout()
 
-    filedata= '_'.join([str(s) for s in args])
-    fig1[0].savefig("plots/"+filedata+"_5000_with_limiter_both_sides_stratonovich_speed_and_distance.svg",format='svg')
-    fig2.savefig("plots/"+filedata+"_5000_with_limiter_both_sides_tratonovich_speed_to_distance.svg",format='svg')
-    fig3.savefig("plots/"+filedata+"_5000_with_limiter_both_sides_tratonovich_pdf_first_break.svg",format='svg')
-    plt.show()
+            filedata= '_'.join([str(s) for s in args])
+            fig1[0].savefig("plots_fixed_model/"+filedata+"_5000_with_limiter_both_sides_stratonovich_speed_and_distance.svg",format='svg')
+            fig2.savefig("plots_fixed_model/"+filedata+"_5000_with_limiter_both_sides_tratonovich_speed_to_distance.svg",format='svg')
+            if(np.sum(binned_breaks)!=0):
+                fig3.savefig("plots_fixed_model/"+filedata+"_5000_with_limiter_both_sides_tratonovich_pdf_first_break.svg",format='svg')
+            e=perf_counter()
+            print("plotting ",e-d,"total ",e-a)
+            print("total till start ", e-start)
+        #plt.show()
+    pool.close()
+    pool.join()
