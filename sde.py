@@ -4,15 +4,15 @@
 
 
 
+from os import makedirs
+from os.path import exists
 import numpy as np
 from numpy.random import Generator, PCG64
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from time import perf_counter
-import time
+from datetime import datetime
 import multiprocessing as mp
-import warnings
-from itertools import chain
 from numba import njit
 
 class trainModel(object):
@@ -73,7 +73,7 @@ class trainModel(object):
     
     @staticmethod
     @njit 
-    def __euler_maruyama(a:float,  b: float, stratonovich_constant:float, sigmahat_constant:float, vcruise:float, vmax:float, vt:float, st:float, dv_prec:float, sPrec:float, h: float)->float:
+    def __euler_maruyama(alfa:float,  beta: float, stratonovich_constant:float, sigmahat_constant:float, vcruise:float, vmax:float, vt:float, st:float, dv_prec:float, sPrec:float, h: float)->float:
         #ito for
         #h=dt
 
@@ -88,7 +88,7 @@ class trainModel(object):
         #the limiter must be smooth and be o in vmax
         #limiter=1 / (1 + np.exp(-self.vmax+vt))vt/self.vmax
         limiter=1-np.power(vt/vmax,vcruise)
-        a=(b*(vcruise-vt)+ a*(sPrec-st)*limiter)
+        a=(beta*(vcruise-vt)+ alfa*(sPrec-st)*limiter)
 
         
         # ito
@@ -124,6 +124,7 @@ class trainModel(object):
             return np.array([self.vcruise])
         
         tobreak = np.full(self.Ntrains+1, False)
+        catched = np.full(self.Ntrains+1, True)
         #Setup step lenght and traj array
         h = T/N
         v = np.zeros((self.Ntrains+1,N+1),dtype=float)
@@ -144,6 +145,9 @@ class trainModel(object):
 
         breakedAt=np.empty((self.Ntrains+1,), dtype=object)
         breakedAt.fill([])
+        
+        catchedUp=np.empty((self.Ntrains+1,), dtype=object)
+        catchedUp.fill([])
         
         #Setup random generator
         rng = Generator(PCG64())
@@ -173,17 +177,22 @@ class trainModel(object):
                 if v[train, i]<=0:
                     v[train, i]=0
                     dv[train]=-v[train, i-1]
+                
                 s[train, i] = s[train, i-1] + ds[train]
                 dist[train, i]= self.x0+s[train-1,i]-s[train,i] 
                 
-                if dist[train, i] < self.dmin and train!=1:
+                if dist[train, i] < self.dmin : #and train!=1
                     if tobreak[train] == False:
                         breakedAt[train].append(i)
+                        catched[train] = False
                     tobreak[train] = True
                 elif dist[train, i] >= self.x0:
+                    if catched[train] == False and v[train, i]>=self.vcruise:
+                        catchedUp[train].append(i)
+                        catched[train]=True
                     tobreak[train] = False
 
-        return v, s, dist, time, breakedAt
+        return v, s, dist, time, breakedAt, catchedUp
     
     @staticmethod
     def create_plots(plot, vtraj, distraj, ttraj):
@@ -201,9 +210,16 @@ def pool_wrapper(period, args):
     return res
 #---------------------------------------------------------------------------------------------------------------    
 if __name__ == '__main__':
+    
+    data=datetime.now().strftime("%d-%m-%y-%M")
+    directory="plots_momentary"+str(data)
+
+    if not exists(directory):
+        makedirs(directory)
+
     pool=mp.Pool()
     start=perf_counter()
-    for trainToFollow in range(1,10):
+    for trainToFollow in range(1,3):
         for s in ["DMR","CIR"]:
             a=perf_counter()
             all_headway = []
@@ -220,9 +236,13 @@ if __name__ == '__main__':
             fig3 = plt.figure(figsize=(8, 5))
             ax3 = fig3.add_subplot(111)
             
+            #time duration of breaks
+            fig4 = plt.figure(figsize=(8, 5))
+            ax4 = fig4.add_subplot(111)
+            #distance
             Nsim = 500
             #Ntreni, b, vcruise, a, vmax, x0, min dist, sigma, breaking, select_model
-
+            #        0.02,35,0.0005,40,3200,3000, 0.1, 0.55,
             args= (trainToFollow,0.02,35,0.0005,40,3200,3000, 0.1, 0.55, s)
             
             b=perf_counter()
@@ -246,40 +266,47 @@ if __name__ == '__main__':
             print("esecuzione ", c-b, " total ",c-a)
 
             i=0
-            for vtraj, straj, distraj, ttraj, breakedAt in results:
+
+            # for i in range(Nsim):
+            #     vtraj, straj, distraj, ttraj, breakedAt = system.simulateTraj(period)
+            breakTimes=[]
+            t=0
+            for vtraj, straj, distraj, ttraj, breakedAt, catchedUp in results:
                 i+=1
                 if(breakedAt[trainToFollow]!=[]):
                     distr_of_breaks[breakedAt[trainToFollow][0]]+=1
-            # for point in breakedAt[trainToFollow]:
-            #     #print(point)
-            #     distr_of_breaks[point]+=1
+                    for j in range(len(catchedUp[trainToFollow])):
+                        breakTimes.append(catchedUp[trainToFollow][j]-breakedAt[trainToFollow][j])
+                t=ttraj
+
                 if(i%4==0):
                     trainModel.create_plots(fig1, vtraj[trainToFollow], distraj[trainToFollow], ttraj)
                 all_speed.append(vtraj[trainToFollow])
                 all_headway.append(distraj[trainToFollow])
 
-            # for i in range(Nsim):
-                
-            #     vtraj, straj, distraj, ttraj, breakedAt = system.simulateTraj(period)
+            all_speed_a=np.array(all_speed)
+            all_headway_a=np.array(all_headway)
+            mean_vtraj = np.mean(all_speed_a, axis=0)
+            mean_distraj = np.mean(all_headway_a, axis=0)
 
-            #     if(breakedAt[trainToFollow]!=[]):
-            #         distr_of_breaks[breakedAt[trainToFollow][0]]+=1
-            #     # for point in breakedAt[trainToFollow]:
-            #     #     #print(point)
-            #     #     distr_of_breaks[point]+=1
+            fig, (ax_vel, ax_dist) = fig1
+            ax_vel.plot(ttraj, mean_vtraj, color='red', linewidth=2, label='mean speed')
+            ax_dist.plot(ttraj, mean_distraj, color='blue', linewidth=2, label='mean distance')
 
-            #     if(i%14==0):
-            #         system.create_plots(fig1, vtraj[trainToFollow], distraj[trainToFollow], ttraj)
-            #     all_speed.append(vtraj[trainToFollow])
-            #     all_headway.append(distraj[trainToFollow])
-            headway_q=np.concatenate(all_headway)/1000
-            speed_q=np.concatenate(all_speed)
+
+            max_duration = max(breakTimes) if breakTimes else 0
+            binsforbreaks = np.arange(0, max_duration + 10, 10)  # bin da 0 a max_duration, a passi di 3
+            hist, edges = np.histogram(breakTimes, bins=binsforbreaks)
+
             # headway_q =np.stack([arr[trainToFollow] for arr in distraj]).flatten()
             # speed_q = np.stack([arr[trainToFollow] for arr in vtraj]).flatten()
             # print(type(headway_q), np.shape(headway_q))
             # time_q=np.fromiter(chain.from_iterable(ttraj),float)
             # trainModel.create_plots(fig1,speed_q,headway_q,time_q)
 
+            headway_q=np.concatenate(all_headway)/1000
+            speed_q=np.concatenate(all_speed)
+            
             d=perf_counter()
             print("assegnazione risultati ",d-c,"total ",d-a)
 
@@ -299,21 +326,40 @@ if __name__ == '__main__':
             print(np.sum(binned_breaks))
             if(np.sum(binned_breaks)!=0):    
                 bar=ax3.bar(np.arange(len(binned_breaks_perc)), binned_breaks_perc, color='gray', align='edge')
-                ax3.set_xlabel("Time step of brake event (binned every 10 steps)")
-                ax3.set_ylabel("Number of brake events, total "+ str(np.sum(binned_breaks)))
-                ax3.set_title("Histogram of Brake Events Over Time (10-step bins)")
-            #plt.xlim(0, period[1])
+                ax3.set_xlabel("Time step of first brake event (binned every 10 steps)")
+                ax3.set_ylabel("Number of first brake events")
+                ax3.set_title("Histogram of FIRST Brake Events Over Time (10-step bins), total "+ str(np.sum(binned_breaks)))
+
+                ax4.bar(edges[:-1], hist, width=10, align='edge')
+                ax4.set_xlabel("stopping time (seconds, bin of 10s)")
+                ax4.set_ylabel("frequency")
+                ax4.set_title("distribution of time spent not on cruise speed, total"+str(len(breakTimes)))
 
             plt.tight_layout()
-
+            
             filedata= '_'.join([str(s) for s in args])
-            fig1[0].savefig("plots_fixed_model/"+filedata+"_5000_with_limiter_both_sides_stratonovich_speed_and_distance.svg",format='svg')
-            fig2.savefig("plots_fixed_model/"+filedata+"_5000_with_limiter_both_sides_tratonovich_speed_to_distance.svg",format='svg')
+
+
+            fig1[0].savefig(directory+"/"+filedata+"_5000_with_limiter_both_sides_stratonovich_speed_and_distance.svg",format='svg')
+            fig2.savefig(directory+"/"+filedata+"_5000_with_limiter_both_sides_stratonovich_speed_to_distance.svg",format='svg')
             if(np.sum(binned_breaks)!=0):
-                fig3.savefig("plots_fixed_model/"+filedata+"_5000_with_limiter_both_sides_tratonovich_pdf_first_break.svg",format='svg')
+               fig3.savefig(directory+"/"+filedata+"_5000_with_limiter_both_sides_stratonovich_pdf_first_break.svg",format='svg')
+               fig4.savefig(directory+"/"+filedata+"_5000_with_limiter_both_sides_stratonovich_time_spent_breaking.svg",format='svg')
             e=perf_counter()
             print("plotting ",e-d,"total ",e-a)
             print("total till start ", e-start)
-        #plt.show()
+            
+            #plt.show()
     pool.close()
     pool.join()
+
+
+#TODO add mean and variance to the plots to show where the mean distance at the end is
+
+#TODO trasformare la lunghezza e la presenza di un treno in base alla posizione sul percorso,
+# prendi un treno che parte, poi ne parte un altro dopo tot chilometri passati, poi un altro ...
+# vedi come si comportano su una lunga distanza, tipo distanza milano verona,
+# vedi come interagiscono tra di loro, dove si interrompono a vicenda ecc.
+
+# distanza milano brescia 91 km e limite regionali 130km/h -> 36m/s e limite 40 m/s
+
