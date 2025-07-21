@@ -219,8 +219,8 @@ if __name__ == '__main__':
 
     pool=mp.Pool()
     start=perf_counter()
-    for trainToFollow in range(1,3):
-        for s in ["DMR","CIR"]:
+    for trainToFollow in range(100,101):
+        for s in ["DMR"]:
             a=perf_counter()
             all_headway = []
             all_speed = []
@@ -243,7 +243,7 @@ if __name__ == '__main__':
             Nsim = 500
             #Ntreni, b, vcruise, a, vmax, x0, min dist, sigma, breaking, select_model
             #        0.02,35,0.0005,40,3200,3000, 0.1, 0.55,
-            args= (trainToFollow,0.02,35,0.0005,40,3200,3000, 0.1, 0.55, s)
+            args= (trainToFollow,0.02,35,0.0005,40,6000,3000, 0.1, 0.55, s)
             
             b=perf_counter()
             print("assegnazione ", b-a)
